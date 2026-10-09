@@ -68,6 +68,8 @@ def run_git_log_for_file(repo_path: str, file_path: str) -> list[tuple[str, str]
         cwd=repo_path,
         capture_output=True,
         text=True,
+        encoding="utf-8",   # git always outputs UTF-8; Windows defaults to cp1252
+        errors="replace",   # never crash on a weird byte; substitute instead
     )
     lines = [line for line in result.stdout.strip().split("\n") if line]
 
@@ -102,14 +104,18 @@ def extract_features_for_file(repo_path: str, file_path: str) -> GitHistoryFeatu
 if __name__ == "__main__":
     import sys
     import json
-    from pathlib import Path
 
     repo_path = sys.argv[1] if len(sys.argv) > 1 else "."
 
     # Find every tracked file in the repo using git itself, so we don't
     # need our own file-walking logic here — git already knows this.
     result = subprocess.run(
-        ["git", "ls-files"], cwd=repo_path, capture_output=True, text=True
+        ["git", "ls-files"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     tracked_files = [f for f in result.stdout.strip().split("\n") if f]
 
