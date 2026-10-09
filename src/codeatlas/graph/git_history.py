@@ -46,7 +46,12 @@ class GitHistoryFeature:
     authors: set = field(default_factory=set)
 
 
-def run_git_log_for_file(repo_path: str, file_path: str) -> list[tuple[str, str]]:
+def run_git_log_for_file(
+    repo_path: str,
+    file_path: str,
+    before: str | None = None,
+    after: str | None = None,
+) -> list[tuple[str, str]]:
     """
     Runs the actual git command that lists every commit touching one file.
 
@@ -61,10 +66,22 @@ def run_git_log_for_file(repo_path: str, file_path: str) -> list[tuple[str, str]
                               to appear in real text, so we can split on it)
     - `-- <file_path>`     -> only show commits that touched THIS file
 
+    Optional time window (this is what makes a fair ML test possible):
+    - before -> only commits OLDER than this date (e.g. "2025-01-01")
+    - after  -> only commits NEWER than this date
+    Leave both as None to get the full history, exactly like before.
+
     Returns a list of (author_name, commit_message) tuples, one per commit.
     """
+    cmd = ["git", "log", "--follow", "--format=%an|||%s"]
+    if before:
+        cmd.append(f"--before={before}")
+    if after:
+        cmd.append(f"--after={after}")
+    cmd += ["--", file_path]
+
     result = subprocess.run(
-        ["git", "log", "--follow", "--format=%an|||%s", "--", file_path],
+        cmd,
         cwd=repo_path,
         capture_output=True,
         text=True,
@@ -86,8 +103,13 @@ def is_bug_fix_commit(commit_message: str) -> bool:
     return any(keyword in lowered for keyword in BUG_FIX_KEYWORDS)
 
 
-def extract_features_for_file(repo_path: str, file_path: str) -> GitHistoryFeature:
-    commits = run_git_log_for_file(repo_path, file_path)
+def extract_features_for_file(
+    repo_path: str,
+    file_path: str,
+    before: str | None = None,
+    after: str | None = None,
+) -> GitHistoryFeature:
+    commits = run_git_log_for_file(repo_path, file_path, before, after)
 
     feature = GitHistoryFeature(file_path=file_path)
     feature.churn_count = len(commits)
@@ -102,16 +124,24 @@ def extract_features_for_file(repo_path: str, file_path: str) -> GitHistoryFeatu
 
 
 if __name__ == "__main__":
-    import sys
+    import argparse
     import json
 
-    repo_path = sys.argv[1] if len(sys.argv) > 1 else "."
+    parser = argparse.ArgumentParser(
+        description="Extract git-history features (churn, authors, bug fixes) per file."
+    )
+    parser.add_argument("repo", nargs="?", default=".", help="path to a git repo")
+    parser.add_argument("--before", default=None,
+                        help="only count commits older than this date, e.g. 2025-01-01")
+    parser.add_argument("--out", default=None,
+                        help="write JSON to this file (UTF-8) instead of printing")
+    args = parser.parse_args()
 
     # Find every tracked file in the repo using git itself, so we don't
     # need our own file-walking logic here — git already knows this.
     result = subprocess.run(
         ["git", "ls-files"],
-        cwd=repo_path,
+        cwd=args.repo,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -121,13 +151,19 @@ if __name__ == "__main__":
 
     all_features = []
     for f in tracked_files:
-        feature = extract_features_for_file(repo_path, f)
+        feature = extract_features_for_file(args.repo, f, before=args.before)
         all_features.append({
             "file_path": feature.file_path,
             "churn_count": feature.churn_count,
             "author_count": feature.author_count,
             "bug_fix_commit_count": feature.bug_fix_commit_count,
-            "authors": list(feature.authors),
+            "authors": sorted(feature.authors),
         })
 
-    print(json.dumps(all_features, indent=2))
+    text = json.dumps(all_features, indent=2)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print(f"Wrote {len(all_features)} files to {args.out}")
+    else:
+        print(text)
