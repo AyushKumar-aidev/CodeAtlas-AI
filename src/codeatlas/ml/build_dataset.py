@@ -8,9 +8,11 @@ Git history lets us fake a "time machine":
 
     PAST (before cutoff)              FUTURE (after cutoff)
     ----------------------            ----------------------
-    count churn, authors,     --->    did this file get a
-    bug-fix commits                   bug-fix commit AFTER?
-    (these are the FEATURES)          (this is the LABEL: risky = 1/0)
+    git history (churn, authors,      did this file get a
+    bug-fix commits) PLUS the code    bug-fix commit AFTER?
+    itself as it looked back then     (this is the LABEL: risky = 1/0)
+    (size, complexity, import graph)
+    (these are the FEATURES)
 
 The model only ever sees the past. We check whether it can predict the
 future. That is an honest test (NFR5): the answer is never leaked into
@@ -38,6 +40,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from codeatlas.graph.git_history import extract_features_for_file  # noqa: E402
+from codeatlas.ml.code_features import compute_code_features  # noqa: E402
+
+CODE_COLUMNS = ["loc", "complexity_total", "complexity_max", "in_degree", "pagerank"]
 
 
 def _git(repo: str, *args: str) -> str:
@@ -64,8 +69,14 @@ def list_source_files(repo: str, extensions: tuple[str, ...]) -> list[str]:
     return [f for f in files if f and f.endswith(extensions)]
 
 
-def build_dataset(repo: str, cutoff: str, extensions: tuple[str, ...]) -> list[dict]:
+def build_dataset(repo: str, cutoff: str, extensions: tuple[str, ...],
+                  use_code_features: bool = True) -> list[dict]:
     rows = []
+    dropped_no_code = 0
+    code = {}
+    if use_code_features:
+        print("  reading the code as it was at the cutoff...", file=sys.stderr)
+        code = compute_code_features(repo, cutoff)
     repo_name = Path(repo).resolve().name
     files = list_source_files(repo, extensions)
     for i, path in enumerate(files, 1):
@@ -79,15 +90,28 @@ def build_dataset(repo: str, cutoff: str, extensions: tuple[str, ...]) -> list[d
         if past.churn_count == 0:
             continue
 
-        rows.append({
+        row = {
             "repo": repo_name,
             "file_path": path,
             "churn_count": past.churn_count,
             "author_count": past.author_count,
             "bug_fix_commit_count": past.bug_fix_commit_count,
-            "future_bug_fixes": future.bug_fix_commit_count,
-            "risky": 1 if future.bug_fix_commit_count >= 1 else 0,
-        })
+        }
+        if use_code_features:
+            metrics = code.get(path)
+            if metrics is None:
+                # e.g. the file was renamed after the cutoff, so its path did
+                # not exist back then. We drop it rather than invent numbers.
+                dropped_no_code += 1
+                continue
+            row.update({c: metrics[c] for c in CODE_COLUMNS})
+        row["future_bug_fixes"] = future.bug_fix_commit_count
+        row["risky"] = 1 if future.bug_fix_commit_count >= 1 else 0
+        rows.append(row)
+
+    if dropped_no_code:
+        print(f"   dropped {dropped_no_code} file(s) with no code at the cutoff "
+              "(path did not exist then)", file=sys.stderr)
     return rows
 
 
@@ -99,6 +123,8 @@ def main() -> None:
                          "(default: 12 months before each repo's latest commit)")
     ap.add_argument("--ext", nargs="+", default=[".py"],
                     help="source file extensions to keep (default: .py)")
+    ap.add_argument("--git-only", action="store_true",
+                    help="skip code features (size, complexity, import graph)")
     ap.add_argument("--out", default="dataset.csv", help="output CSV path")
     args = ap.parse_args()
 
@@ -106,7 +132,8 @@ def main() -> None:
     for repo in args.repos:
         cutoff = args.cutoff or default_cutoff(repo)
         print(f"\n== {Path(repo).resolve().name}  (cutoff {cutoff}) ==", file=sys.stderr)
-        rows = build_dataset(repo, cutoff, tuple(args.ext))
+        rows = build_dataset(repo, cutoff, tuple(args.ext),
+                             use_code_features=not args.git_only)
         risky = sum(r["risky"] for r in rows)
         print(f"   kept {len(rows)} files | risky {risky} | not risky {len(rows) - risky}",
               file=sys.stderr)
@@ -116,8 +143,10 @@ def main() -> None:
         print("No usable files found. Try an earlier --cutoff.", file=sys.stderr)
         sys.exit(1)
 
-    fields = ["repo", "file_path", "churn_count", "author_count",
-              "bug_fix_commit_count", "future_bug_fixes", "risky"]
+    fields = ["repo", "file_path", "churn_count", "author_count", "bug_fix_commit_count"]
+    if not args.git_only:
+        fields += CODE_COLUMNS
+    fields += ["future_bug_fixes", "risky"]
     with open(args.out, "w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields)
         writer.writeheader()

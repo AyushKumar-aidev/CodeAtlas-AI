@@ -5,13 +5,20 @@ WHAT THIS FILE DOES, IN PLAIN TERMS
 -------------------------------------
 Reads the dataset made by build_dataset.py and answers one question:
 
-    "Can git history (churn, authors, past bug fixes) predict which
-     files will need bug fixes in the FUTURE - and is that better than
-     a dead-simple guess?"
+    "Can git history (churn, authors, past bug fixes) plus the code itself
+     (size, complexity, import-graph centrality) predict which files will
+     need bug fixes in the FUTURE - and is that better than a dead-simple
+     guess?"
 
-The simple guess (our BASELINE) is: "files that changed the most are the
-riskiest". If the ML model cannot beat that, the model is not adding
-value, and we must say so honestly (NFR5).
+The simple guesses (our BASELINES) are:
+    - churn:      "files that changed the most are the riskiest"
+    - complexity: "the most complex files are the riskiest"
+                  (cyclomatic complexity, the baseline named in the SRS)
+    - size:       "the biggest files (most lines) are the riskiest"
+                  (a famously strong predictor; a fair test of whether
+                  complexity/centrality add anything beyond plain size)
+If the ML model cannot beat them, it is not adding value, and we must say
+so honestly (NFR5).
 
 HOW WE MEASURE
 --------------
@@ -43,19 +50,24 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import precision_score, recall_score, roc_auc_score
 from sklearn.model_selection import RepeatedStratifiedKFold, train_test_split
 
-FEATURES = ["churn_count", "author_count", "bug_fix_commit_count"]
+GIT_FEATURES = ["churn_count", "author_count", "bug_fix_commit_count"]
+CODE_FEATURES = ["loc", "complexity_total", "complexity_max", "in_degree", "pagerank"]
 SEED = 42
 
 
 def load_dataset(path: str):
+    """
+    Returns X, y, names, repos.
+    `names` lists the feature columns actually found: the git columns always,
+    plus the code columns if the CSV was built with them (older CSVs lack them).
+    """
     with open(path, encoding="utf-8", newline="") as fh:
         rows = list(csv.DictReader(fh))
-    X = np.array([[float(r[f]) for f in FEATURES] for r in rows])
+    names = GIT_FEATURES + [c for c in CODE_FEATURES if rows and c in rows[0]]
+    X = np.array([[float(r[f]) for f in names] for r in rows])
     y = np.array([int(r["risky"]) for r in rows])
-    paths = [r["file_path"] for r in rows]
-    # Older CSVs (single repo) have no "repo" column -> repos is None.
     repos = np.array([r["repo"] for r in rows]) if rows and "repo" in rows[0] else None
-    return X, y, paths, repos
+    return X, y, names, repos
 
 
 def make_model() -> RandomForestClassifier:
@@ -66,12 +78,23 @@ def make_model() -> RandomForestClassifier:
     )
 
 
-def baseline_scores(X: np.ndarray) -> np.ndarray:
-    """Baseline: risk score = churn_count (column 0). More changes = riskier."""
-    return X[:, 0]
+def baselines(names) -> dict[str, int]:
+    """Baseline name -> column index. Each baseline's risk score is ONE column."""
+    found = {"churn": names.index("churn_count")}
+    if "complexity_total" in names:
+        found["complexity"] = names.index("complexity_total")
+    if "loc" in names:
+        found["size"] = names.index("loc")
+    return found
 
 
-def holdout_report(X, y) -> None:
+def describe(diff: float, noise: float) -> str:
+    if abs(diff) < noise:
+        return "no clear difference (smaller than the noise)"
+    return "forest ahead" if diff > 0 else "BASELINE ahead"
+
+
+def holdout_report(X, y, names) -> None:
     X_tr, X_te, y_tr, y_te = train_test_split(
         X, y, test_size=0.3, stratify=y, random_state=SEED
     )
@@ -82,45 +105,58 @@ def holdout_report(X, y) -> None:
     print("=== Single train/test split (70% / 30%) ===")
     print(f"train files: {len(y_tr)}  |  test files: {len(y_te)}  "
           f"(risky in test: {int(y_te.sum())})")
-    print(f"Baseline (churn only)  ROC-AUC: {roc_auc_score(y_te, baseline_scores(X_te)):.3f}")
-    print(f"Random Forest          ROC-AUC: {roc_auc_score(y_te, proba):.3f}")
+    for bname, col in baselines(names).items():
+        print(f"Baseline ({bname} only)".ljust(28) + f"ROC-AUC: {roc_auc_score(y_te, X_te[:, col]):.3f}")
+    print("Random Forest".ljust(28) + f"ROC-AUC: {roc_auc_score(y_te, proba):.3f}")
     print(f"Random Forest precision: {precision_score(y_te, pred, zero_division=0):.3f}  "
           f"recall: {recall_score(y_te, pred, zero_division=0):.3f}")
     print("  precision = of files flagged risky, how many really were")
     print("  recall    = of truly risky files, how many we caught")
 
 
-def cross_validation_report(X, y) -> None:
+def cross_validation_report(X, y, names) -> None:
     cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=5, random_state=SEED)
-    base_aucs, rf_aucs = [], []
+    base_cols = baselines(names)
+    base_aucs = {b: [] for b in base_cols}
+    rf_aucs = []
     for tr, te in cv.split(X, y):
         model = make_model().fit(X[tr], y[tr])
         rf_aucs.append(roc_auc_score(y[te], model.predict_proba(X[te])[:, 1]))
-        base_aucs.append(roc_auc_score(y[te], baseline_scores(X[te])))
+        for b, col in base_cols.items():
+            base_aucs[b].append(roc_auc_score(y[te], X[te, col]))
 
     print("\n=== Repeated cross-validation (5 folds x 5 repeats = 25 tests) ===")
-    print(f"Baseline (churn only)  ROC-AUC: {np.mean(base_aucs):.3f} +/- {np.std(base_aucs):.3f}")
-    print(f"Random Forest          ROC-AUC: {np.mean(rf_aucs):.3f} +/- {np.std(rf_aucs):.3f}")
-
-    diff = np.mean(rf_aucs) - np.mean(base_aucs)
-    noise = np.std(np.array(rf_aucs) - np.array(base_aucs))
-    if abs(diff) < noise:
-        print("\nVerdict: the difference is smaller than the noise. On this data we")
-        print("CANNOT claim the ML model beats the churn baseline.")
-    elif diff > 0:
-        print(f"\nVerdict: the Random Forest is ahead by {diff:.3f} AUC (bigger than the noise).")
-    else:
-        print(f"\nVerdict: the simple baseline is ahead by {-diff:.3f} AUC. The ML model is not helping here.")
+    for b in base_cols:
+        print(f"Baseline ({b} only)".ljust(28) +
+              f"ROC-AUC: {np.mean(base_aucs[b]):.3f} +/- {np.std(base_aucs[b]):.3f}")
+    print("Random Forest".ljust(28) + f"ROC-AUC: {np.mean(rf_aucs):.3f} +/- {np.std(rf_aucs):.3f}")
+    print("(note: these random splits mix files from the same repo - the")
+    print(" leave-one-repo-out test below is the stricter, more honest one)")
+    print()
+    for b in base_cols:
+        d = np.array(rf_aucs) - np.array(base_aucs[b])
+        print(f"  forest vs {b} baseline: {d.mean():+.3f}  -> {describe(d.mean(), d.std())}")
 
 
-def leave_one_repo_out_report(X, y, repos) -> None:
+def leave_one_repo_out_report(X, y, names, repos) -> None:
     print("\n=== Leave-one-repo-out (train on the other repos, test on the unseen one) ===")
     if repos is None or len(set(repos)) < 2:
         print("Skipped: needs a dataset built from 2+ repos (a 'repo' column).")
         return
 
-    print(f"{'test repo':<16}{'files':>6}{'risky':>7}{'baseline AUC':>15}{'forest AUC':>13}{'diff':>8}")
-    diffs = []
+    base_cols = baselines(names)
+    git_cols = [names.index(f) for f in GIT_FEATURES]
+    has_code = len(names) > len(GIT_FEATURES)
+
+    header = f"{'test repo':<16}{'files':>6}{'risky':>7}"
+    for b in base_cols:
+        header += f"{b + ' base':>17}"
+    if has_code:
+        header += f"{'forest(git)':>13}"
+    header += f"{'forest(all)':>13}"
+    print(header)
+
+    results = []  # (baseline AUCs dict, forest_git, forest_all)
     for repo in sorted(set(repos)):
         test = repos == repo
         train = ~test
@@ -128,29 +164,51 @@ def leave_one_repo_out_report(X, y, repos) -> None:
         if len(set(y[test])) < 2 or len(set(y[train])) < 2:
             print(f"{repo:<16}{int(test.sum()):>6}{int(y[test].sum()):>7}   skipped (only one class)")
             continue
-        model = make_model().fit(X[train], y[train])
-        rf = roc_auc_score(y[test], model.predict_proba(X[test])[:, 1])
-        base = roc_auc_score(y[test], baseline_scores(X[test]))
-        diffs.append(rf - base)
-        print(f"{repo:<16}{int(test.sum()):>6}{int(y[test].sum()):>7}{base:>15.3f}{rf:>13.3f}{rf - base:>+8.3f}")
+        base = {b: roc_auc_score(y[test], X[test, c]) for b, c in base_cols.items()}
+        rf_all = roc_auc_score(
+            y[test], make_model().fit(X[train], y[train]).predict_proba(X[test])[:, 1]
+        )
+        rf_git = None
+        line = f"{repo:<16}{int(test.sum()):>6}{int(y[test].sum()):>7}"
+        for b in base_cols:
+            line += f"{base[b]:>17.3f}"
+        if has_code:
+            rf_git = roc_auc_score(
+                y[test],
+                make_model().fit(X[train][:, git_cols], y[train]).predict_proba(X[test][:, git_cols])[:, 1],
+            )
+            line += f"{rf_git:>13.3f}"
+        line += f"{rf_all:>13.3f}"
+        print(line)
+        results.append((base, rf_git, rf_all))
 
-    if not diffs:
+    if not results:
         return
-    wins = sum(d > 0 for d in diffs)
-    print(f"\nForest beats the baseline on {wins} of {len(diffs)} unseen repos "
-          f"(average difference {np.mean(diffs):+.3f} AUC).")
-    if wins == len(diffs):
-        print("Verdict: the gain held on every repo the model had never seen.")
-    elif wins > len(diffs) / 2:
-        print("Verdict: the gain holds on most unseen repos but not all - report it that way.")
+    n = len(results)
+    print()
+    for b in base_cols:
+        wins = sum(r[2] > r[0][b] for r in results)
+        avg = np.mean([r[2] - r[0][b] for r in results])
+        print(f"forest(all) beats the {b} baseline on {wins} of {n} unseen repos (average {avg:+.3f} AUC)")
+    if has_code:
+        wins = sum(r[2] > r[1] for r in results)
+        avg = np.mean([r[2] - r[1] for r in results])
+        print(f"adding code features helps on {wins} of {n} unseen repos (average {avg:+.3f} AUC vs git-only)")
+
+    best_wins = sum(all(r[2] > r[0][b] for b in base_cols) for r in results)
+    print()
+    if best_wins == n:
+        print("Verdict: the forest beat every baseline on every repo it had never seen.")
+    elif best_wins > n / 2:
+        print("Verdict: the forest beats the baselines on most unseen repos but not all - report it that way.")
     else:
-        print("Verdict: the gain does NOT generalise to unseen repos. Report that honestly.")
+        print("Verdict: the forest does NOT reliably beat the baselines on unseen repos. Report that honestly.")
 
 
-def feature_importance_report(X, y) -> None:
+def feature_importance_report(X, y, names) -> None:
     model = make_model().fit(X, y)
     print("\n=== What the forest relied on (trained on all files) ===")
-    for name, imp in sorted(zip(FEATURES, model.feature_importances_), key=lambda t: -t[1]):
+    for name, imp in sorted(zip(names, model.feature_importances_), key=lambda t: -t[1]):
         print(f"  {name:<22} {imp:.3f}")
 
 
@@ -159,17 +217,18 @@ def main() -> None:
     ap.add_argument("dataset", help="CSV produced by build_dataset.py")
     args = ap.parse_args()
 
-    X, y, _, repos = load_dataset(args.dataset)
+    X, y, names, repos = load_dataset(args.dataset)
     n_risky = int(y.sum())
-    print(f"Loaded {len(y)} files ({n_risky} risky, {len(y) - n_risky} not risky)\n")
+    print(f"Loaded {len(y)} files ({n_risky} risky, {len(y) - n_risky} not risky)")
+    print(f"Features used: {', '.join(names)}\n")
     if n_risky < 5 or len(y) - n_risky < 5:
         print("Too few examples of one class to evaluate honestly. Use a bigger repo/dataset.")
         sys.exit(1)
 
-    holdout_report(X, y)
-    cross_validation_report(X, y)
-    leave_one_repo_out_report(X, y, repos)
-    feature_importance_report(X, y)
+    holdout_report(X, y, names)
+    cross_validation_report(X, y, names)
+    leave_one_repo_out_report(X, y, names, repos)
+    feature_importance_report(X, y, names)
 
 
 if __name__ == "__main__":
