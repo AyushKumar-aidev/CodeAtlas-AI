@@ -34,22 +34,59 @@ class DependencyGraph:
         self.edges.setdefault(from_file, set()).add(to_file)
 
 
-def resolve_import(import_module: str, repo_root: str) -> str | None:
+def _find_module(base: Path, parts: list[str]) -> str | None:
     """
-    Given a dotted import string like "parsing.python_parser" and the repo's
-    root folder, figure out which actual .py file it refers to, if any.
+    Look for a module under `base`: first `a/b/c.py`, then the package
+    `a/b/c/__init__.py`. With no parts, the package `base/__init__.py`.
+    """
+    if parts:
+        target = base.joinpath(*parts)
+        as_file = Path(str(target) + ".py")
+        if as_file.is_file():
+            return str(as_file)
+        as_pkg = target / "__init__.py"
+    else:
+        as_pkg = base / "__init__.py"
+    if as_pkg.is_file():
+        return str(as_pkg)
+    return None
 
-    LIMITATION (stated honestly, not hidden): this only handles the common
-    case of a dotted path mapping directly to a file under the repo root.
-    It does NOT yet handle: relative imports (from . import x), imports of
-    third-party installed packages (which correctly return None here, since
-    they're not part of THIS repo's graph), or __init__.py re-export chains.
-    Each of those is a real, separate piece of future work — not silently
-    assumed to be "basically the same problem."
+
+def resolve_import(
+    import_module: str, repo_root: str, importer_path: str | None = None
+) -> str | None:
     """
-    candidate = Path(repo_root) / (import_module.replace(".", "/") + ".py")
-    if candidate.exists():
-        return str(candidate)
+    Given an import string and the repo's root folder, figure out which
+    actual .py file inside THIS repo it refers to, if any.
+
+    Handles:
+      - absolute imports:  "parsing.python_parser" -> parsing/python_parser.py
+      - packages:          "flask"                 -> flask/__init__.py
+      - src/ layouts:      also tries <repo_root>/src/...
+      - relative imports:  ".app", "..utils", "." (needs importer_path, the
+                           file that contains the import statement)
+
+    STILL NOT handled (stated honestly): names re-exported through
+    __init__.py chains, namespace packages, dynamic imports. Third-party
+    libraries correctly return None - they are not part of THIS repo's graph.
+    """
+    root = Path(repo_root)
+
+    if import_module.startswith("."):
+        if importer_path is None:
+            return None
+        dots = len(import_module) - len(import_module.lstrip("."))
+        rest = import_module[dots:]
+        base = Path(importer_path).parent
+        for _ in range(dots - 1):  # one dot = same package, two dots = parent...
+            base = base.parent
+        return _find_module(base, rest.split(".") if rest else [])
+
+    parts = import_module.split(".")
+    for search_root in (root, root / "src"):
+        found = _find_module(search_root, parts)
+        if found is not None:
+            return found
     return None
 
 
@@ -61,8 +98,8 @@ def build_dependency_graph(parsed_files, repo_root: str) -> DependencyGraph:
 
     for parsed_file in parsed_files:
         for imp in parsed_file.imports:
-            resolved = resolve_import(imp.module, repo_root)
-            if resolved is not None:
+            resolved = resolve_import(imp.module, repo_root, parsed_file.path)
+            if resolved is not None and resolved != parsed_file.path:
                 graph.add_edge(parsed_file.path, resolved)
             else:
                 # Not a bug — this correctly happens for every external
