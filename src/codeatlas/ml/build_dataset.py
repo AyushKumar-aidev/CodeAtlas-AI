@@ -17,8 +17,12 @@ future. That is an honest test (NFR5): the answer is never leaked into
 the inputs.
 
 Usage (from the project root):
-    python src/codeatlas/ml/build_dataset.py C:/path/to/repo --out dataset.csv
-    python src/codeatlas/ml/build_dataset.py C:/path/to/repo --cutoff 2025-01-01
+    python src/codeatlas/ml/build_dataset.py C:/repo1 --out dataset.csv
+    python src/codeatlas/ml/build_dataset.py C:/repo1 C:/repo2 C:/repo3 --out all.csv
+    python src/codeatlas/ml/build_dataset.py C:/repo1 --cutoff 2025-01-01
+
+With several repos, each repo gets its OWN cutoff (12 months before ITS latest
+commit) unless you pass --cutoff, and every row records which repo it came from.
 """
 
 from __future__ import annotations
@@ -62,10 +66,11 @@ def list_source_files(repo: str, extensions: tuple[str, ...]) -> list[str]:
 
 def build_dataset(repo: str, cutoff: str, extensions: tuple[str, ...]) -> list[dict]:
     rows = []
+    repo_name = Path(repo).resolve().name
     files = list_source_files(repo, extensions)
     for i, path in enumerate(files, 1):
         if i % 25 == 0:
-            print(f"  ...{i}/{len(files)} files", file=sys.stderr)
+            print(f"  [{repo_name}] ...{i}/{len(files)} files", file=sys.stderr)
 
         past = extract_features_for_file(repo, path, before=cutoff)
         future = extract_features_for_file(repo, path, after=cutoff)
@@ -75,6 +80,7 @@ def build_dataset(repo: str, cutoff: str, extensions: tuple[str, ...]) -> list[d
             continue
 
         rows.append({
+            "repo": repo_name,
             "file_path": path,
             "churn_count": past.churn_count,
             "author_count": past.author_count,
@@ -87,33 +93,40 @@ def build_dataset(repo: str, cutoff: str, extensions: tuple[str, ...]) -> list[d
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Build the ML dataset from git history.")
-    ap.add_argument("repo", help="path to a cloned git repo")
+    ap.add_argument("repos", nargs="+", help="path(s) to cloned git repo(s)")
     ap.add_argument("--cutoff", default=None,
-                    help="YYYY-MM-DD split date (default: 12 months before latest commit)")
+                    help="YYYY-MM-DD split date for ALL repos "
+                         "(default: 12 months before each repo's latest commit)")
     ap.add_argument("--ext", nargs="+", default=[".py"],
                     help="source file extensions to keep (default: .py)")
     ap.add_argument("--out", default="dataset.csv", help="output CSV path")
     args = ap.parse_args()
 
-    cutoff = args.cutoff or default_cutoff(args.repo)
-    print(f"Cutoff date: {cutoff}", file=sys.stderr)
+    all_rows: list[dict] = []
+    for repo in args.repos:
+        cutoff = args.cutoff or default_cutoff(repo)
+        print(f"\n== {Path(repo).resolve().name}  (cutoff {cutoff}) ==", file=sys.stderr)
+        rows = build_dataset(repo, cutoff, tuple(args.ext))
+        risky = sum(r["risky"] for r in rows)
+        print(f"   kept {len(rows)} files | risky {risky} | not risky {len(rows) - risky}",
+              file=sys.stderr)
+        all_rows.extend(rows)
 
-    rows = build_dataset(args.repo, cutoff, tuple(args.ext))
-    if not rows:
+    if not all_rows:
         print("No usable files found. Try an earlier --cutoff.", file=sys.stderr)
         sys.exit(1)
 
-    fields = ["file_path", "churn_count", "author_count",
+    fields = ["repo", "file_path", "churn_count", "author_count",
               "bug_fix_commit_count", "future_bug_fixes", "risky"]
     with open(args.out, "w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(all_rows)
 
-    risky = sum(r["risky"] for r in rows)
-    print(f"\nWrote {len(rows)} files to {args.out}")
-    print(f"Risky (bug-fixed after cutoff): {risky}  |  Not risky: {len(rows) - risky}")
-    if risky < 0.1 * len(rows) or risky > 0.9 * len(rows):
+    risky = sum(r["risky"] for r in all_rows)
+    print(f"\nWrote {len(all_rows)} files from {len(args.repos)} repo(s) to {args.out}")
+    print(f"Risky (bug-fixed after cutoff): {risky}  |  Not risky: {len(all_rows) - risky}")
+    if risky < 0.1 * len(all_rows) or risky > 0.9 * len(all_rows):
         print("WARNING: classes are very unbalanced; try a different --cutoff.")
 
 
