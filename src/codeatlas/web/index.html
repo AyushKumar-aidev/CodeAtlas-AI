@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeAtlas AI</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#1b1f24;--muted:#656d76;--line:#d8dee4;--accent:#2563eb;--warn:#fff8c5;--warnt:#6a5300}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--card:#161b22;--text:#e6edf3;--muted:#8b949e;--line:#30363d;--accent:#58a6ff;--warn:#3a2f00;--warnt:#f0d36b}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,Segoe UI,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:24px 16px 60px}h1{margin:0 0 4px;font-size:26px}.sub{color:var(--muted);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+form{display:flex;gap:8px;flex-wrap:wrap}input[type=text]{flex:1;min-width:240px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:inherit}
+button{padding:10px 18px;border:0;border-radius:8px;background:var(--accent);color:#fff;font:inherit;cursor:pointer}button:disabled{opacity:.5;cursor:wait}
+#status{margin-top:12px;color:var(--muted)}#error{margin-top:12px;color:#cf222e;white-space:pre-wrap}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}.stat b{display:block;font-size:22px}.stat span{color:var(--muted);font-size:13px}
+.note{background:var(--warn);color:var(--warnt);padding:10px 12px;border-radius:8px;margin-top:12px}
+.tabs{display:flex;gap:6px;margin-bottom:12px}.tabs button{background:var(--card);color:var(--text);border:1px solid var(--line)}.tabs button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.tablewrap{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th{cursor:pointer;color:var(--muted);user-select:none}td:nth-child(2),th:nth-child(2){text-align:left;white-space:normal;word-break:break-all}
+.bar{display:inline-block;height:8px;border-radius:4px;vertical-align:middle;margin-right:6px}
+#filter{width:100%;max-width:320px;margin-bottom:10px}svg{width:100%;height:auto;background:var(--bg);border-radius:8px}
+#info{min-height:22px;margin-top:8px;color:var(--muted);word-break:break-all}.hidden{display:none}
+#chatlog{max-height:460px;overflow-y:auto;margin-bottom:12px;display:flex;flex-direction:column;gap:10px}
+.msg{padding:10px 12px;border-radius:10px;white-space:pre-wrap;word-break:break-word;max-width:92%}
+.msg.user{align-self:flex-end;background:var(--accent);color:#fff}.msg.bot{align-self:flex-start;background:var(--bg);border:1px solid var(--line)}
+.msg.err{align-self:flex-start;color:#cf222e;border:1px solid #cf222e}.srcs{margin-top:8px;font-size:12.5px;color:var(--muted);white-space:normal}
+.srcs code{display:block;font-family:ui-monospace,Consolas,monospace}.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.chips button{background:var(--bg);color:var(--text);border:1px solid var(--line);padding:6px 10px;font-size:13px}
+#chatform input{flex:1}
+.msg.bot{white-space:normal}.ans p{margin:0 0 8px}.ans ul,.ans ol{margin:0 0 8px;padding-left:22px}.ans li{margin-bottom:4px}.cite{color:var(--muted);font-size:.85em;font-family:ui-monospace,Consolas,monospace}.ans pre{background:var(--card);border:1px solid var(--line);padding:8px;border-radius:6px;overflow-x:auto;margin:0 0 8px}
+.ic{font-family:ui-monospace,Consolas,monospace;background:var(--card);border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:.92em}.srcs code{border:0;padding:0;background:none}
+</style>
+</head>
+<body><main>
+<h1>CodeAtlas AI</h1>
+<p class="sub">Paste a public GitHub repository to see its riskiest files and how they depend on each other.</p>
+<div class="card">
+  <form id="form"><input type="text" id="url" placeholder="https://github.com/pallets/itsdangerous" required>
+  <button id="go" type="submit">Analyze</button></form>
+  <div id="status"></div><div id="error"></div>
+</div>
+<div id="results" class="hidden">
+  <div class="card"><div class="stats" id="stats"></div><div id="note"></div></div>
+  <div class="tabs"><button id="tab-table" class="on">Risk table</button><button id="tab-graph">Dependency graph</button><button id="tab-ask">Ask the repo</button></div>
+  <div class="card" id="pane-table"><input type="text" id="filter" placeholder="Filter files…"><div class="tablewrap"><table id="table"></table></div></div>
+  <div class="card hidden" id="pane-graph"><div id="graphnote" class="sub"></div><svg id="graph" viewBox="0 0 1000 640"></svg><div id="info">Hover a file to see details.</div>
+  <p class="sub">Dot size = importance (PageRank). Colour = risk, green (low) to red (high). A line means one file imports the other.</p></div>
+  <div class="card hidden" id="pane-ask">
+    <div id="askoff" class="note hidden">Q&amp;A is switched off: the server has no GEMINI_API_KEY set.</div>
+    <div class="chips" id="chips"></div>
+    <div id="chatlog"></div>
+    <form id="chatform"><input type="text" id="q" maxlength="600" placeholder="Ask about this repository…" autocomplete="off"><button id="ask">Ask</button></form>
+    <p class="sub">Answers come from the repository's own code and docs and cite file:line. They can still be wrong, so check the sources.</p>
+  </div>
+</div>
+</main>
+<script>
+"use strict";
+// All text from the repo (file names!) is inserted with textContent / append(), never innerHTML,
+// because a repository can contain file names designed to inject script.
+const $ = (id) => document.getElementById(id);
+const el = (tag, attrs = {}, ...kids) => { const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); e.append(...kids); return e; };
+const svgEl = (tag, attrs = {}) => { const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const riskColor = (s) => `hsl(${Math.round(120 * (1 - s))},70%,45%)`;
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  let body = null; try { body = await res.json(); } catch (_) {}
+  if (!res.ok) throw new Error(body && typeof body.detail === "string" ? body.detail : `Request failed (${res.status})`);
+  return body;
+}
+
+const COLUMNS = [["rank","#"],["path","File"],["risk_score","Risk"],["churn_count","Changes"],["author_count","Authors"],
+  ["bug_fix_commit_count","Bug-fix commits"],["loc","Lines"],["complexity_total","Complexity"],["in_degree","Imported by"],["pagerank","Importance"]];
+let files = [], sortKey = "rank", sortDir = 1;
+
+function renderTable() {
+  const q = $("filter").value.trim().toLowerCase();
+  const rows = files.filter((f) => f.path.toLowerCase().includes(q)).sort((a, b) =>
+    sortDir * (typeof a[sortKey] === "string" ? a[sortKey].localeCompare(b[sortKey]) : a[sortKey] - b[sortKey]));
+  const head = el("tr", {}, ...COLUMNS.map(([key, label]) => {
+    const th = el("th", {}, label + (key === sortKey ? (sortDir > 0 ? " ▲" : " ▼") : ""));
+    th.addEventListener("click", () => { sortDir = key === sortKey ? -sortDir : 1; sortKey = key; renderTable(); });
+    return th; }));
+  const body = rows.map((f) => { const bar = el("span", {class: "bar"});
+    bar.style.width = Math.round(f.risk_score * 60) + "px"; bar.style.background = riskColor(f.risk_score);
+    return el("tr", {}, el("td", {}, String(f.rank)), el("td", {}, f.path), el("td", {}, bar, f.risk_score.toFixed(2)),
+      ...[f.churn_count, f.author_count, f.bug_fix_commit_count, f.loc, f.complexity_total, f.in_degree, f.pagerank.toFixed(2)]
+        .map((v) => el("td", {}, String(v)))); });
+  $("table").replaceChildren(head, ...body);
+}
+
+function renderGraph(graph) {
+  const MAX = 120, W = 1000, H = 640, svg = $("graph"); svg.replaceChildren();
+  const deg = new Map(graph.nodes.map((n) => [n.id, 0]));
+  graph.edges.forEach((e) => { deg.set(e.source, deg.get(e.source) + 1); deg.set(e.target, deg.get(e.target) + 1); });
+  const connected = graph.nodes.filter((n) => deg.get(n.id) > 0);
+  const nodes = connected.sort((a, b) => b.pagerank - a.pagerank).slice(0, MAX);
+  const idx = new Map(nodes.map((n, i) => [n.id, i]));
+  const edges = graph.edges.filter((e) => idx.has(e.source) && idx.has(e.target));
+  $("graphnote").textContent = `Showing the ${nodes.length} most important of ${graph.nodes.length} files` +
+    ` (${graph.nodes.length - connected.length} files with no internal imports are left out).`;
+  if (!nodes.length) return;
+  // Fruchterman-Reingold layout: nodes repel, imports pull together.
+  const n = nodes.length, k = Math.sqrt(W * H / n) * 0.8;
+  const pos = nodes.map((_, i) => ({ x: W / 2 + 250 * Math.cos(2 * Math.PI * i / n), y: H / 2 + 250 * Math.sin(2 * Math.PI * i / n) }));
+  let temp = W / 10;
+  for (let it = 0; it < 250; it++) {
+    const d = pos.map(() => ({ x: 0, y: 0 }));
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+      let dx = pos[i].x - pos[j].x, dy = pos[i].y - pos[j].y, dist = Math.max(Math.hypot(dx, dy), 0.01);
+      const f = k * k / dist; dx /= dist; dy /= dist;
+      d[i].x += dx * f; d[i].y += dy * f; d[j].x -= dx * f; d[j].y -= dy * f; }
+    for (const e of edges) { const s = idx.get(e.source), t = idx.get(e.target);
+      let dx = pos[s].x - pos[t].x, dy = pos[s].y - pos[t].y, dist = Math.max(Math.hypot(dx, dy), 0.01);
+      const f = dist * dist / k; dx /= dist; dy /= dist;
+      d[s].x -= dx * f; d[s].y -= dy * f; d[t].x += dx * f; d[t].y += dy * f; }
+    for (let i = 0; i < n; i++) { const len = Math.max(Math.hypot(d[i].x, d[i].y), 0.01), lim = Math.min(len, temp);
+      pos[i].x = Math.min(W - 30, Math.max(30, pos[i].x + d[i].x / len * lim));
+      pos[i].y = Math.min(H - 30, Math.max(30, pos[i].y + d[i].y / len * lim)); }
+    temp *= 0.98; }
+  for (const e of edges) { const a = pos[idx.get(e.source)], b = pos[idx.get(e.target)];
+    svg.append(svgEl("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: "currentColor", "stroke-opacity": "0.25" })); }
+  nodes.forEach((nd, i) => { const c = svgEl("circle", { cx: pos[i].x, cy: pos[i].y, r: 4 + Math.min(10, 5 * Math.sqrt(nd.pagerank)),
+      fill: riskColor(nd.risk_score), stroke: "#fff", "stroke-width": "1" });
+    c.addEventListener("mouseover", () => { $("info").textContent =
+      `${nd.id}  —  risk ${nd.risk_score.toFixed(2)}, importance ${nd.pagerank.toFixed(2)}, imported by ${nd.in_degree} file(s)`; });
+    svg.append(c); });
+}
+
+function showTab(name) {
+  for (const t of ["table", "graph", "ask"]) {
+    $("pane-" + t).classList.toggle("hidden", name !== t); $("tab-" + t).classList.toggle("on", name === t);
+  }
+}
+
+// ---- Q&A chat. Answers and sources are plain text (textContent) - never HTML.
+let current = null, history = [], qaEnabled = true;
+const SUGGESTIONS = ["What does this project do?", "Where should a new contributor start reading?", "Why is the riskiest file risky?", "How is the code organised?"];
+// Tiny, safe markdown: **bold**, `code`, [path:lines] citations, "- " / "1." lists, headings, ``` fences.
+// Built with DOM nodes only - never innerHTML.
+function inline(text) {
+  const out = []; const re = /(\*\*.+?\*\*|`[^`]+`|\[[^\]\s,]+:\d+(?:-\d+)?(?:,\s*[^\]\s,]+:\d+(?:-\d+)?)*\])/g; let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const t = m[0];
+    if (t.startsWith("**")) out.push(el("strong", {}, ...inline(t.slice(2, -2))));
+    else if (t.startsWith("`")) out.push(el("code", { class: "ic" }, t.slice(1, -1)));
+    else out.push(el("span", { class: "cite" }, t));
+    last = m.index + t.length;
+  }
+  if (last < text.length) out.push(text.slice(last)); return out;
+}
+function renderAnswer(text) {
+  const box = el("div", { class: "ans" }); let list = null, listTag = null, fence = null;
+  for (const line of text.split("\n")) {
+    if (line.trim().startsWith("```")) { list = null; if (fence) { box.append(el("pre", {}, fence.join("\n"))); fence = null; } else fence = []; continue; }
+    if (fence) { fence.push(line); continue; }
+    const b = line.match(/^\s*[-*]\s+(.*)$/), n = line.match(/^\s*\d+[.)]\s+(.*)$/), h = line.match(/^\s*#{1,6}\s+(.*)$/);
+    const item = b || n;
+    if (item) {
+      const tag = n ? "ol" : "ul";
+      if (!list || listTag !== tag) { list = el(tag, {}); listTag = tag; box.append(list); }
+      list.append(el("li", {}, ...inline(item[1]))); continue;
+    }
+    list = null;
+    if (h) box.append(el("p", {}, el("strong", {}, ...inline(h[1]))));
+    else if (line.trim()) box.append(el("p", {}, ...inline(line)));
+  }
+  if (fence) box.append(el("pre", {}, fence.join("\n")));
+  return box;
+}
+function addMsg(kind, text, sources) {
+  const m = el("div", { class: "msg " + kind }, kind === "bot" && sources ? renderAnswer(text) : text);
+  if (sources && sources.length) m.append(el("div", { class: "srcs" }, "Sources:",
+    ...sources.map(s => el("code", {}, `${s.path}:${s.start_line}-${s.end_line}  ${s.name}`))));
+  $("chatlog").append(m); $("chatlog").scrollTop = $("chatlog").scrollHeight;
+}
+async function resetChat(owner, name) {
+  current = { owner, name }; history = []; $("chatlog").replaceChildren();
+  $("chips").replaceChildren(...SUGGESTIONS.map(t => { const b = el("button", { type: "button" }, t);
+    b.addEventListener("click", () => { $("q").value = t; $("chatform").requestSubmit(); }); return b; }));
+  try { qaEnabled = (await api("/api/qa/status")).enabled; } catch (_) { qaEnabled = false; }
+  $("askoff").classList.toggle("hidden", qaEnabled); $("ask").disabled = !qaEnabled; $("q").disabled = !qaEnabled;
+}
+$("chatform").addEventListener("submit", async (ev) => {
+  ev.preventDefault(); const q = $("q").value.trim(); if (!q || !current) return;
+  $("q").value = ""; $("chips").replaceChildren(); addMsg("user", q); $("ask").disabled = true;
+  const thinking = el("div", { class: "msg bot" }, "Thinking…"); $("chatlog").append(thinking);
+  try {
+    const r = await api(`/api/repos/${encodeURIComponent(current.owner)}/${encodeURIComponent(current.name)}/ask`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: q, history }) });
+    thinking.remove(); addMsg("bot", r.answer, r.sources);
+    history.push({ role: "user", content: q }, { role: "assistant", content: r.answer }); history = history.slice(-8);
+  } catch (e) { thinking.remove(); addMsg("err", e.message); }
+  finally { $("ask").disabled = !qaEnabled; $("q").focus(); }
+});
+
+async function loadResults(owner, name, summary) {
+  const base = `/api/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+  const [graph, all] = await Promise.all([api(`${base}/graph`), (async () => { let items = [], offset = 0, total = 1;
+    while (offset < total) { const p = await api(`${base}/files?limit=500&offset=${offset}`); total = p.total; items = items.concat(p.items); offset += 500; }
+    return items; })()]);
+  files = all;
+  const stat = (v, l) => el("div", { class: "stat" }, el("b", {}, String(v)), el("span", {}, l));
+  $("stats").replaceChildren(stat(summary.n_files, "Python files"), stat(summary.n_edges, "imports between files"),
+    stat(summary.n_functions, "functions"), stat(summary.n_classes, "classes"), stat(summary.elapsed_seconds + " s", "analysis time"));
+  $("note").replaceChildren(...(summary.scoring_method === "churn_baseline" ? [el("div", { class: "note" },
+    "No trained risk model was found, so files are ranked only by how often they changed (churn baseline).")] : []));
+  sortKey = "rank"; sortDir = 1; $("filter").value = ""; renderTable(); renderGraph(graph);
+  resetChat(owner, name); $("results").classList.remove("hidden"); showTab("table");
+}
+
+$("form").addEventListener("submit", async (ev) => {
+  ev.preventDefault(); $("error").textContent = ""; $("results").classList.add("hidden"); $("go").disabled = true;
+  try {
+    $("status").textContent = "Starting…";
+    let job = await api("/api/repos", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: $("url").value }) });
+    const path = `/api/repos/${encodeURIComponent(job.owner)}/${encodeURIComponent(job.name)}`;
+    while (job.status === "queued" || job.status === "running") {
+      $("status").textContent = job.status === "queued" ? "Waiting in the queue…" : `Working: ${job.stage}…`;
+      await sleep(1500); job = await api(path);
+    }
+    if (job.status === "failed") throw new Error(job.error || "The analysis failed.");
+    await loadResults(job.owner, job.name, job.summary); $("status").textContent = "";
+  } catch (e) { $("status").textContent = ""; $("error").textContent = e.message; }
+  finally { $("go").disabled = false; }
+});
+$("filter").addEventListener("input", renderTable);
+$("tab-table").addEventListener("click", () => showTab("table"));
+$("tab-graph").addEventListener("click", () => showTab("graph"));
+$("tab-ask").addEventListener("click", () => showTab("ask"));
+</script>
+</body></html>
