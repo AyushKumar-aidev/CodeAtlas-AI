@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# CodeAtlas local data
+.codeatlas_data/
+models/
+.env
