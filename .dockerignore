@@ -1,0 +1,10 @@
+.git
+.env
+.venv
+__pycache__
+*.pyc
+.codeatlas_data
+tests
+all_repos.csv
+evaluation_results.txt
+uv.lock
