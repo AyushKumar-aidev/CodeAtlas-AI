@@ -27,6 +27,17 @@ class Settings:
     clone_timeout: int = 600
     # How many analyses may run at once. 1 is right for a 1 GB cloud VM.
     workers: int = 1
+    # --- Q&A chat (RAG). The key is read from the environment, never hard-coded.
+    gemini_api_key: str = field(default="", repr=False)
+    llm_model: str = "gemini-3.5-flash-lite"
+    llm_fallback_model: str = "gemini-3.1-flash-lite"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/models/"
+    llm_timeout: int = 60
+    qa_max_question_chars: int = 600
+    qa_rate_per_minute: int = 10
+    qa_daily_limit: int = 300
+    qa_top_k: int = 8
+    qa_max_context_chars: int = 24000
     # Browser origins allowed to call the API (the React dev server, for now).
     cors_origins: list[str] = field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
@@ -43,6 +54,12 @@ class Settings:
             max_files=int(os.environ.get("CODEATLAS_MAX_FILES", defaults.max_files)),
             clone_timeout=int(os.environ.get("CODEATLAS_CLONE_TIMEOUT", defaults.clone_timeout)),
             workers=int(os.environ.get("CODEATLAS_WORKERS", defaults.workers)),
+            gemini_api_key=os.environ.get("GEMINI_API_KEY", "").strip(),
+            llm_model=os.environ.get("CODEATLAS_LLM_MODEL", defaults.llm_model),
+            llm_fallback_model=os.environ.get("CODEATLAS_LLM_FALLBACK_MODEL", defaults.llm_fallback_model),
+            gemini_base_url=os.environ.get("CODEATLAS_GEMINI_BASE_URL", defaults.gemini_base_url),
+            qa_rate_per_minute=int(os.environ.get("CODEATLAS_QA_RATE_PER_MINUTE", defaults.qa_rate_per_minute)),
+            qa_daily_limit=int(os.environ.get("CODEATLAS_QA_DAILY_LIMIT", defaults.qa_daily_limit)),
             cors_origins=[o.strip() for o in origins.split(",") if o.strip()]
             if origins else defaults.cors_origins,
         )

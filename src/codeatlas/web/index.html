@@ -21,6 +21,15 @@ th{cursor:pointer;color:var(--muted);user-select:none}td:nth-child(2),th:nth-chi
 .bar{display:inline-block;height:8px;border-radius:4px;vertical-align:middle;margin-right:6px}
 #filter{width:100%;max-width:320px;margin-bottom:10px}svg{width:100%;height:auto;background:var(--bg);border-radius:8px}
 #info{min-height:22px;margin-top:8px;color:var(--muted);word-break:break-all}.hidden{display:none}
+#chatlog{max-height:460px;overflow-y:auto;margin-bottom:12px;display:flex;flex-direction:column;gap:10px}
+.msg{padding:10px 12px;border-radius:10px;white-space:pre-wrap;word-break:break-word;max-width:92%}
+.msg.user{align-self:flex-end;background:var(--accent);color:#fff}.msg.bot{align-self:flex-start;background:var(--bg);border:1px solid var(--line)}
+.msg.err{align-self:flex-start;color:#cf222e;border:1px solid #cf222e}.srcs{margin-top:8px;font-size:12.5px;color:var(--muted);white-space:normal}
+.srcs code{display:block;font-family:ui-monospace,Consolas,monospace}.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.chips button{background:var(--bg);color:var(--text);border:1px solid var(--line);padding:6px 10px;font-size:13px}
+#chatform input{flex:1}
+.msg.bot{white-space:normal}.ans p{margin:0 0 8px}.ans ul,.ans ol{margin:0 0 8px;padding-left:22px}.ans li{margin-bottom:4px}.cite{color:var(--muted);font-size:.85em;font-family:ui-monospace,Consolas,monospace}.ans pre{background:var(--card);border:1px solid var(--line);padding:8px;border-radius:6px;overflow-x:auto;margin:0 0 8px}
+.ic{font-family:ui-monospace,Consolas,monospace;background:var(--card);border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:.92em}.srcs code{border:0;padding:0;background:none}
 </style>
 </head>
 <body><main>
@@ -33,10 +42,17 @@ th{cursor:pointer;color:var(--muted);user-select:none}td:nth-child(2),th:nth-chi
 </div>
 <div id="results" class="hidden">
   <div class="card"><div class="stats" id="stats"></div><div id="note"></div></div>
-  <div class="tabs"><button id="tab-table" class="on">Risk table</button><button id="tab-graph">Dependency graph</button></div>
+  <div class="tabs"><button id="tab-table" class="on">Risk table</button><button id="tab-graph">Dependency graph</button><button id="tab-ask">Ask the repo</button></div>
   <div class="card" id="pane-table"><input type="text" id="filter" placeholder="Filter files…"><div class="tablewrap"><table id="table"></table></div></div>
   <div class="card hidden" id="pane-graph"><div id="graphnote" class="sub"></div><svg id="graph" viewBox="0 0 1000 640"></svg><div id="info">Hover a file to see details.</div>
   <p class="sub">Dot size = importance (PageRank). Colour = risk, green (low) to red (high). A line means one file imports the other.</p></div>
+  <div class="card hidden" id="pane-ask">
+    <div id="askoff" class="note hidden">Q&amp;A is switched off: the server has no GEMINI_API_KEY set.</div>
+    <div class="chips" id="chips"></div>
+    <div id="chatlog"></div>
+    <form id="chatform"><input type="text" id="q" maxlength="600" placeholder="Ask about this repository…" autocomplete="off"><button id="ask">Ask</button></form>
+    <p class="sub">Answers come from the repository's own code and docs and cite file:line. They can still be wrong, so check the sources.</p>
+  </div>
 </div>
 </main>
 <script>
@@ -117,9 +133,72 @@ function renderGraph(graph) {
 }
 
 function showTab(name) {
-  $("pane-table").classList.toggle("hidden", name !== "table"); $("pane-graph").classList.toggle("hidden", name !== "graph");
-  $("tab-table").classList.toggle("on", name === "table"); $("tab-graph").classList.toggle("on", name === "graph");
+  for (const t of ["table", "graph", "ask"]) {
+    $("pane-" + t).classList.toggle("hidden", name !== t); $("tab-" + t).classList.toggle("on", name === t);
+  }
 }
+
+// ---- Q&A chat. Answers and sources are plain text (textContent) - never HTML.
+let current = null, history = [], qaEnabled = true;
+const SUGGESTIONS = ["What does this project do?", "Where should a new contributor start reading?", "Why is the riskiest file risky?", "How is the code organised?"];
+// Tiny, safe markdown: **bold**, `code`, [path:lines] citations, "- " / "1." lists, headings, ``` fences.
+// Built with DOM nodes only - never innerHTML.
+function inline(text) {
+  const out = []; const re = /(\*\*.+?\*\*|`[^`]+`|\[[^\]\s,]+:\d+(?:-\d+)?(?:,\s*[^\]\s,]+:\d+(?:-\d+)?)*\])/g; let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const t = m[0];
+    if (t.startsWith("**")) out.push(el("strong", {}, ...inline(t.slice(2, -2))));
+    else if (t.startsWith("`")) out.push(el("code", { class: "ic" }, t.slice(1, -1)));
+    else out.push(el("span", { class: "cite" }, t));
+    last = m.index + t.length;
+  }
+  if (last < text.length) out.push(text.slice(last)); return out;
+}
+function renderAnswer(text) {
+  const box = el("div", { class: "ans" }); let list = null, listTag = null, fence = null;
+  for (const line of text.split("\n")) {
+    if (line.trim().startsWith("```")) { list = null; if (fence) { box.append(el("pre", {}, fence.join("\n"))); fence = null; } else fence = []; continue; }
+    if (fence) { fence.push(line); continue; }
+    const b = line.match(/^\s*[-*]\s+(.*)$/), n = line.match(/^\s*\d+[.)]\s+(.*)$/), h = line.match(/^\s*#{1,6}\s+(.*)$/);
+    const item = b || n;
+    if (item) {
+      const tag = n ? "ol" : "ul";
+      if (!list || listTag !== tag) { list = el(tag, {}); listTag = tag; box.append(list); }
+      list.append(el("li", {}, ...inline(item[1]))); continue;
+    }
+    list = null;
+    if (h) box.append(el("p", {}, el("strong", {}, ...inline(h[1]))));
+    else if (line.trim()) box.append(el("p", {}, ...inline(line)));
+  }
+  if (fence) box.append(el("pre", {}, fence.join("\n")));
+  return box;
+}
+function addMsg(kind, text, sources) {
+  const m = el("div", { class: "msg " + kind }, kind === "bot" && sources ? renderAnswer(text) : text);
+  if (sources && sources.length) m.append(el("div", { class: "srcs" }, "Sources:",
+    ...sources.map(s => el("code", {}, `${s.path}:${s.start_line}-${s.end_line}  ${s.name}`))));
+  $("chatlog").append(m); $("chatlog").scrollTop = $("chatlog").scrollHeight;
+}
+async function resetChat(owner, name) {
+  current = { owner, name }; history = []; $("chatlog").replaceChildren();
+  $("chips").replaceChildren(...SUGGESTIONS.map(t => { const b = el("button", { type: "button" }, t);
+    b.addEventListener("click", () => { $("q").value = t; $("chatform").requestSubmit(); }); return b; }));
+  try { qaEnabled = (await api("/api/qa/status")).enabled; } catch (_) { qaEnabled = false; }
+  $("askoff").classList.toggle("hidden", qaEnabled); $("ask").disabled = !qaEnabled; $("q").disabled = !qaEnabled;
+}
+$("chatform").addEventListener("submit", async (ev) => {
+  ev.preventDefault(); const q = $("q").value.trim(); if (!q || !current) return;
+  $("q").value = ""; $("chips").replaceChildren(); addMsg("user", q); $("ask").disabled = true;
+  const thinking = el("div", { class: "msg bot" }, "Thinking…"); $("chatlog").append(thinking);
+  try {
+    const r = await api(`/api/repos/${encodeURIComponent(current.owner)}/${encodeURIComponent(current.name)}/ask`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: q, history }) });
+    thinking.remove(); addMsg("bot", r.answer, r.sources);
+    history.push({ role: "user", content: q }, { role: "assistant", content: r.answer }); history = history.slice(-8);
+  } catch (e) { thinking.remove(); addMsg("err", e.message); }
+  finally { $("ask").disabled = !qaEnabled; $("q").focus(); }
+});
 
 async function loadResults(owner, name, summary) {
   const base = `/api/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
@@ -133,7 +212,7 @@ async function loadResults(owner, name, summary) {
   $("note").replaceChildren(...(summary.scoring_method === "churn_baseline" ? [el("div", { class: "note" },
     "No trained risk model was found, so files are ranked only by how often they changed (churn baseline).")] : []));
   sortKey = "rank"; sortDir = 1; $("filter").value = ""; renderTable(); renderGraph(graph);
-  $("results").classList.remove("hidden"); showTab("table");
+  resetChat(owner, name); $("results").classList.remove("hidden"); showTab("table");
 }
 
 $("form").addEventListener("submit", async (ev) => {
@@ -154,5 +233,6 @@ $("form").addEventListener("submit", async (ev) => {
 $("filter").addEventListener("input", renderTable);
 $("tab-table").addEventListener("click", () => showTab("table"));
 $("tab-graph").addEventListener("click", () => showTab("graph"));
+$("tab-ask").addEventListener("click", () => showTab("ask"));
 </script>
 </body></html>

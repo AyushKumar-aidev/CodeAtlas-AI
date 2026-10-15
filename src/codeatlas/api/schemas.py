@@ -89,3 +89,32 @@ class GraphEdge(BaseModel):
 class Graph(BaseModel):
     nodes: list[GraphNode]
     edges: list[GraphEdge]
+
+
+class AskTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=4000)
+
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    history: list[AskTurn] = Field(default_factory=list, max_length=12)
+
+
+class SourceRef(BaseModel):
+    path: str
+    start_line: int
+    end_line: int
+    name: str
+    kind: str
+
+
+class AskResponse(BaseModel):
+    answer: str
+    sources: list[SourceRef]
+    model: str
+
+
+class QAStatus(BaseModel):
+    enabled: bool
+    model: str

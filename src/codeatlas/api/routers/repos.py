@@ -30,7 +30,7 @@ def _status(job: Job) -> JobStatus:
     )
 
 
-def _finished_job(request: Request, owner: str, name: str) -> Job:
+def finished_job(request: Request, owner: str, name: str) -> Job:
     try:
         validate_repo_id(owner, name)
     except InvalidRepoUrl as exc:
@@ -77,7 +77,7 @@ def list_files(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ) -> FilesPage:
-    job = _finished_job(request, owner, name)
+    job = finished_job(request, owner, name)
     files = job.result["files"]
     return FilesPage(
         scoring_method=job.result["summary"]["scoring_method"],
@@ -89,4 +89,4 @@ def list_files(
 @router.get("/{owner}/{name}/graph", response_model=Graph,
             summary="The import dependency graph (nodes = files, edges = imports)")
 def get_graph(request: Request, owner: str = Owner, name: str = Name) -> Graph:
-    return Graph(**_finished_job(request, owner, name).result["graph"])
+    return Graph(**finished_job(request, owner, name).result["graph"])
