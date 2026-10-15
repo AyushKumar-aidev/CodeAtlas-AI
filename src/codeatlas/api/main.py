@@ -8,13 +8,17 @@ manager, and registers the routers. No business logic belongs here. Run with:
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from codeatlas.api.routers import health, repos
 from codeatlas.config import Settings
 from codeatlas.services.jobs import JobManager
+
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"  # the single-page UI
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -43,6 +47,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.include_router(health.router)
     app.include_router(repos.router, prefix="/api")
+    # Registered LAST so it never hides an API route: serves the UI at "/".
+    if WEB_DIR.is_dir():
+        app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
     return app
 
 

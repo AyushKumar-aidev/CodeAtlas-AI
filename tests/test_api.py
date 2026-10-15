@@ -153,3 +153,12 @@ def test_cors_allows_the_dev_ui_origin(tmp_path, sample_repo):
     client = _make_client(tmp_path, sample_repo)
     response = client.get("/health", headers={"Origin": "http://localhost:5173"})
     assert response.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+
+def test_web_ui_is_served_at_root_and_api_routes_still_win(tmp_path, sample_repo):
+    client = _make_client(tmp_path, sample_repo)
+    page = client.get("/")
+    assert page.status_code == 200 and "text/html" in page.headers["content-type"]
+    assert "CodeAtlas AI" in page.text
+    assert client.get("/health").json() == {"status": "ok"}
+    assert client.get("/api/repos/nobody/nothing").status_code == 404
